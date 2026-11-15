@@ -39,11 +39,11 @@ select,input[type=number]{width:100%;padding:11px;border-radius:9px;border:1px s
     <div class="field"><label for="contrast">对比度</label><select id="contrast"><option value="none">无</option><option value="light">轻微</option><option value="medium" selected>中等</option><option value="strong">强</option><option value="maximum">最大</option></select></div>
     <div class="field"><label for="brightness">亮度</label><select id="brightness"><option value="-30">较暗 -30</option><option value="-15">稍暗 -15</option><option value="0" selected>默认 0</option><option value="15">稍亮 +15</option><option value="30">较亮 +30</option></select></div>
   </div>
-  <p class="hint">每页固定切成三等分，顺序为左 → 中 → 右。切割前会先裁切白边；切割后的内容保持比例，不强行拉伸。</p>
-  <div class="actions"><button id="previewBtn" class="secondary" disabled>预览第一页</button><button id="start" disabled>开始转换</button><button id="cancel" class="secondary" disabled>取消</button></div>
+  <p class="hint">每页先转为横向并裁切白边，再按左 → 中 → 右三等分。每个切片直接适配 528×792 页面，不会再次旋转或拉伸。</p>
+  <div class="actions"><button id="previewBtn" class="secondary" disabled>重新预览</button><button id="start" disabled>开始转换</button><button id="cancel" class="secondary" disabled>取消</button></div>
 </section>
 <section class="panel">
-  <h3 style="margin:0">第一页切割预览</h3><p id="previewInfo" class="hint">选择 PDF 后可预览第一张 PDF 页面的三个切割区域。</p>
+  <h3 style="margin:0">第一页切割预览</h3><p id="previewInfo" class="hint">选择 PDF 后自动显示第一页的三个切割区域；调整白边或清晰度设置后也会自动更新。</p>
   <div id="previewGrid" class="preview-grid"></div>
 </section>
 <section class="panel">

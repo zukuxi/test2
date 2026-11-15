@@ -1,6 +1,6 @@
 // X3 Document PDF Converter — independent document workflow
 const W=528,H=792,$=id=>document.getElementById(id);
-let chosen=[],cancelled=false,running=false,pdfjsPromise=null;
+let chosen=[],cancelled=false,running=false,previewing=false,pdfjsPromise=null,previewTimer=null;
 
 $('pick').onclick=()=>$('pdfs').click();
 $('pdfs').addEventListener('change',()=>{
@@ -11,9 +11,14 @@ $('pdfs').addEventListener('change',()=>{
  $('start').disabled=!chosen.length||running;
  $('previewBtn').disabled=!chosen.length||running;
  $('previewGrid').innerHTML='';
- $('previewInfo').textContent='文件已选择。可以预览第一页的三个切割区域。';
+ if(chosen.length){$('previewInfo').textContent='正在自动生成第一页预览…';previewFirst();}
+ else $('previewInfo').textContent='请选择 PDF 文件。';
 });
 $('previewBtn').onclick=()=>previewFirst();
+['depth','trim','scale','dither','contrast','brightness'].forEach(id=>$(id).addEventListener('change',()=>{
+ if(!chosen.length||running)return;
+ clearTimeout(previewTimer);previewTimer=setTimeout(()=>{if(!previewing)previewFirst();},180);
+}));
 $('start').onclick=()=>runConversion();
 $('cancel').onclick=()=>{cancelled=true;$('cancel').disabled=true;setStatus('正在取消…');};
 
@@ -31,7 +36,20 @@ async function openPdf(file){
  const pdfjs=await getPdfjs();
  pdfjs.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@5.4.624/build/pdf.worker.mjs';
  const data=new Uint8Array(await file.arrayBuffer());
- return await pdfjs.getDocument({data,disableAutoFetch:true,disableStream:true,isEvalSupported:false}).promise;
+ return await pdfjs.getDocument({
+  data,
+  disableAutoFetch:true,
+  disableStream:true,
+  isEvalSupported:false,
+  // Many Japanese academic PDFs reference Hiragino fonts without embedding them.
+  // Load PDF.js CMaps and standard font data, and allow browser system-font fallback.
+  cMapUrl:'https://cdn.jsdelivr.net/npm/pdfjs-dist@5.4.624/cmaps/',
+  cMapPacked:true,
+  standardFontDataUrl:'https://cdn.jsdelivr.net/npm/pdfjs-dist@5.4.624/standard_fonts/',
+  useSystemFonts:true,
+  disableFontFace:false,
+  fontExtraProperties:true
+ }).promise;
 }
 async function renderPdfPage(pdf,n,scale){
  const page=await pdf.getPage(n);
@@ -79,14 +97,14 @@ function trimWhite(src,mode){
  src.width=1;src.height=1;return out;
 }
 function makeX3Page(src){
- // A cropped third is rotated for sideways reading, then fitted without distortion.
- const rotated=rotateCanvas(src),out=canvas(W,H),ctx=out.getContext('2d');
+ // 整页先转横向后，每个三分之一切片已经是竖向阅读区域。
+ // 这里绝不能再次旋转切片，否则文字会横躺并缩成页面中间的一条。
+ const out=canvas(W,H),ctx=out.getContext('2d');
  ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);
  ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
- const scale=Math.min(W/rotated.width,H/rotated.height);
- const dw=rotated.width*scale,dh=rotated.height*scale;
- ctx.drawImage(rotated,(W-dw)/2,(H-dh)/2,dw,dh);
- rotated.width=1;rotated.height=1;
+ const scale=Math.min(W/src.width,H/src.height);
+ const dw=src.width*scale,dh=src.height*scale;
+ ctx.drawImage(src,(W-dw)/2,(H-dh)/2,dw,dh);
  return out;
 }
 function splitThree(page,trimMode){
@@ -378,8 +396,8 @@ function buildBook(pages,is2,title){
 }
 
 async function previewFirst(){
- if(!chosen.length)return;
- $('previewBtn').disabled=true;$('previewInfo').textContent='正在渲染并裁切第一页…';
+ if(!chosen.length||previewing||running)return;
+ previewing=true;$('previewBtn').disabled=true;$('previewInfo').textContent='正在渲染并裁切第一页…';
  $('previewGrid').innerHTML='';
  let pdf;
  try{
@@ -394,7 +412,7 @@ async function previewFirst(){
   });
   $('previewInfo').textContent='第一页预览完成。正式转换会使用相同的白边裁切和三等分方式。';
  }catch(e){$('previewInfo').textContent='预览失败：'+(e?.message||e);}
- finally{try{await pdf?.destroy();}catch(_){}$('previewBtn').disabled=false;}
+ finally{try{await pdf?.destroy();}catch(_){}previewing=false;$('previewBtn').disabled=running||!chosen.length;}
 }
 async function runConversion(){
  if(running||!chosen.length)return;
