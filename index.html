@@ -1,53 +1,460 @@
+
 <!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#10131a">
-<title>X3 文档 PDF 转换器</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#111318">
+<title>X3 PDF Converter</title>
+
 <style>
-:root{color-scheme:dark;--bg:#10131a;--panel:#191f2b;--line:#30394a;--text:#edf2fa;--muted:#a8b3c5;--accent:#8bd5ca}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
-.wrap{max-width:900px;margin:auto;padding:22px 14px 44px}h1{font-size:clamp(23px,5vw,32px);margin:0 0 8px}.lead,.hint{color:var(--muted)}.lead{margin:0 0 18px}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:15px;padding:16px;margin:13px 0}
-button{background:var(--accent);color:#10201f;border:0;border-radius:10px;padding:12px 15px;font-weight:750;font-size:15px;cursor:pointer}button:disabled{opacity:.45}.secondary{background:#2a3445;color:var(--text)}
-input[type=file]{display:none}.row{display:flex;gap:12px;flex-wrap:wrap}.field{flex:1;min-width:150px}label{display:block;font-weight:650;margin-bottom:6px}
-select,input[type=number]{width:100%;padding:11px;border-radius:9px;border:1px solid var(--line);background:#0f141d;color:var(--text);font:inherit}
-.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:13px}.progress{height:8px;background:#0d1118;border-radius:9px;overflow:hidden;margin:10px 0}.bar{height:100%;width:0;background:var(--accent);transition:width .12s}
-.status{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px}.hint{font-size:13px}.preview-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}
-.preview-card{min-width:0;text-align:center;color:var(--muted);font-size:13px}.preview-card img{width:100%;height:auto;max-height:320px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:6px}
-.check{display:flex;align-items:center;gap:8px;margin-top:12px}.check input{width:18px;height:18px}
-@media(max-width:520px){.preview-grid{gap:4px}.preview-card img{max-height:230px}.panel{padding:13px}}
+:root {
+  color-scheme: dark;
+  --bg: #111318;
+  --panel: #1b1e25;
+  --panel2: #242832;
+  --text: #edf0f5;
+  --muted: #9ba3b2;
+  --border: #353b48;
+  --accent: #80b7ff;
+  --green: #72d6a0;
+  --red: #ff8585;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 20px;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  line-height: 1.55;
+}
+
+main {
+  max-width: 920px;
+  margin: 0 auto;
+}
+
+h1 {
+  font-size: 25px;
+  margin: 0 0 6px;
+}
+
+h2 {
+  font-size: 18px;
+  margin: 0 0 14px;
+}
+
+h3 {
+  font-size: 15px;
+  margin: 0 0 12px;
+}
+
+.sub {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 20px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 17px;
+  margin-bottom: 15px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+
+.field {
+  flex: 1 1 170px;
+  min-width: 0;
+}
+
+.field.small {
+  flex: 0 1 130px;
+}
+
+label {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+select,
+input[type="number"] {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 11px;
+  background: var(--panel2);
+  color: var(--text);
+  font: inherit;
+}
+
+input[type="number"]::placeholder {
+  color: #7e8796;
+}
+
+button {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px 15px;
+  min-height: 42px;
+  background: var(--panel2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: #285b91;
+  border-color: #3978b5;
+}
+
+button.danger {
+  color: var(--red);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.file-info,
+.status,
+.hint {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.file-info {
+  margin-top: 12px;
+}
+
+.hint {
+  margin-top: 8px;
+  line-height: 1.6;
+}
+
+.progress {
+  height: 8px;
+  border-radius: 20px;
+  background: #303541;
+  overflow: hidden;
+  margin: 12px 0;
+}
+
+#bar {
+  height: 100%;
+  width: 0;
+  background: var(--green);
+  transition: width .2s;
+}
+
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.preview-card {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #151820;
+}
+
+.preview-card > div {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 7px;
+}
+
+.preview-card img {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  background: white;
+  border-radius: 3px;
+}
+
+.note {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 18px;
+  text-align: center;
+}
+
+.hidden {
+  display: none !important;
+}
+
+@media(max-width:600px) {
+  body {
+    padding: 13px;
+  }
+
+  h1 {
+    font-size: 22px;
+  }
+
+  .panel {
+    padding: 13px;
+  }
+
+  .preview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .field {
+    flex-basis: calc(50% - 8px);
+  }
+
+  .field.small {
+    flex-basis: calc(50% - 8px);
+  }
+
+  .actions button {
+    flex: 1 1 100%;
+  }
+}
 </style>
 </head>
-<body><main class="wrap">
-<h1>X3 文档 PDF 转换器</h1>
-<p class="lead">将普通文档 PDF、扫描 PDF、图片型 PDF 统一转换为 XTC / XTCH。每页自动去白边、转为横向，再按左、中、右切成三页，适合 Xteink X3 横向手持阅读。</p>
-<section class="panel">
-  <div class="actions"><button id="pick">选择一个或多个 PDF</button><input id="pdfs" type="file" accept="application/pdf,.pdf" multiple></div>
-  <div id="fileInfo" class="hint" style="margin-top:10px">尚未选择 PDF。</div>
-</section>
-<section class="panel">
-  <h3 style="margin:0 0 12px">转换设置</h3>
-  <div class="row">
-    <div class="field"><label for="depth">输出格式</label><select id="depth"><option value="1">XTC · 黑白</option><option value="2" selected>XTCH · 4 灰阶</option></select></div>
-    <div class="field"><label for="trim">白边裁切</label><select id="trim"><option value="normal" selected>普通（谨慎裁切）</option><option value="strong">积极（尽量去除白边）</option><option value="off">关闭</option></select></div>
-    <div class="field"><label for="scale">PDF 渲染清晰度</label><select id="scale"><option value="1.5">标准 · 1.5×</option><option value="2" selected>清晰 · 2×</option><option value="2.5">高清 · 2.5×</option></select></div>
+
+<body>
+<main>
+
+  <h1>X3 PDF 转换器</h1>
+  <div class="sub">
+    PDF → XTC / XTCH · 本地浏览器处理 · 文件不会上传
   </div>
-  <div class="row" style="margin-top:12px">
-    <div class="field"><label for="dither">抖动算法</label><select id="dither"><option value="floyd">Floyd–Steinberg</option><option value="atkinson" selected>Atkinson</option><option value="sierra-lite">Sierra Lite</option><option value="ordered">Ordered / Bayer</option><option value="none">无抖动</option></select></div>
-    <div class="field"><label for="contrast">对比度</label><select id="contrast"><option value="none">无</option><option value="light">轻微</option><option value="medium" selected>中等</option><option value="strong">强</option><option value="maximum">最大</option></select></div>
-    <div class="field"><label for="brightness">亮度</label><select id="brightness"><option value="-30">较暗 -30</option><option value="-15">稍暗 -15</option><option value="0" selected>默认 0</option><option value="15">稍亮 +15</option><option value="30">较亮 +30</option></select></div>
+
+  <section class="panel">
+    <h2>1. 选择 PDF</h2>
+
+    <button id="pick" class="primary">
+      选择一个或多个 PDF 文件
+    </button>
+
+    <input
+      id="pdfs"
+      type="file"
+      accept=".pdf,application/pdf"
+      multiple
+      hidden
+    >
+
+    <div id="fileInfo" class="file-info">
+      尚未选择 PDF。
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>2. 转换设置</h2>
+
+    <div class="row">
+      <div class="field">
+        <label for="convertMode">转换方式</label>
+        <select id="convertMode">
+          <option value="original">原样转换</option>
+          <option value="reflow">重新排版</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="orientation">X3 页面方向</label>
+        <select id="orientation">
+          <option value="portrait">竖屏 528 × 792</option>
+          <option value="landscape">横屏 792 × 528</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="depth">输出格式</label>
+        <select id="depth">
+          <option value="1">XTC · 1-bit</option>
+          <option value="2">XTCH · 2-bit</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="originalOptions">
+      <h3 style="margin-top:20px">原样转换设置</h3>
+
+      <div class="row">
+        <div class="field">
+          <label for="trim">白边处理</label>
+          <select id="trim">
+            <option value="normal">普通</option>
+            <option value="strong">积极</option>
+            <option value="off">关闭</option>
+          </select>
+        </div>
+
+        <div class="field small">
+          <label for="trimDistance">
+            自定义额外裁切距离（px）
+          </label>
+          <input
+            id="trimDistance"
+            type="number"
+            min="0"
+            max="300"
+            step="1"
+            placeholder="留空 = 不额外裁切"
+          >
+        </div>
+      </div>
+
+      <div class="hint">
+        自定义距离会在白边自动处理后，再对四边各额外裁切指定像素。
+        留空或填 0 不启用额外裁切。
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:18px">
+      <div class="field">
+        <label for="scale">PDF 渲染清晰度</label>
+        <select id="scale">
+          <option value="1.5">1.5 · 较快</option>
+          <option value="2" selected>2 · 推荐</option>
+          <option value="2.5">2.5 · 较清晰</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="dither">抖动算法</label>
+        <select id="dither">
+          <option value="atkinson">Atkinson</option>
+          <option value="floyd-steinberg">Floyd-Steinberg</option>
+          <option value="sierra-lite">Sierra Lite</option>
+          <option value="ordered">Ordered</option>
+          <option value="none">None</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="contrast">对比度</label>
+        <select id="contrast">
+          <option value="none">关闭</option>
+          <option value="light">轻微</option>
+          <option value="medium" selected>中等</option>
+          <option value="strong">强</option>
+          <option value="maximum">最大</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="brightness">亮度</label>
+        <select id="brightness">
+          <option value="-30">-30</option>
+          <option value="-20">-20</option>
+          <option value="-10">-10</option>
+          <option value="0" selected>0</option>
+          <option value="10">+10</option>
+          <option value="20">+20</option>
+          <option value="30">+30</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="hint">
+      原样转换：保留 PDF 原有页面内容，按原有方式拆分输出。
+      重新排版：尝试提取 PDF 文字并重新分页；扫描页和复杂图文页会回退为原样页面。
+      横屏或竖屏会决定最终 X3 页面尺寸。
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>3. 输出预览</h2>
+
+    <div id="previewInfo" class="hint">
+      请选择 PDF 文件以生成预览。
+    </div>
+
+    <div class="actions">
+      <button id="previewBtn" disabled>
+        重新生成前 10 页预览
+      </button>
+    </div>
+
+    <div id="previewGrid" class="preview-grid"></div>
+  </section>
+
+  <section class="panel">
+    <h2>4. 开始转换</h2>
+
+    <div class="actions">
+      <button id="start" class="primary" disabled>
+        开始转换
+      </button>
+
+      <button id="cancel" class="danger" disabled>
+        取消转换
+      </button>
+    </div>
+
+    <div class="progress">
+      <div id="bar"></div>
+    </div>
+
+    <div id="progressText" class="status">
+      等待转换。
+    </div>
+  </section>
+
+  <div class="note">
+    X3 PDF Converter · Local processing
   </div>
-  <p class="hint">每页先转为横向并裁切白边，再按左 → 中 → 右三等分。每个切片直接适配 528×792 页面，不会再次旋转或拉伸。</p>
-  <div class="actions"><button id="previewBtn" class="secondary" disabled>重新预览</button><button id="start" disabled>开始转换</button><button id="cancel" class="secondary" disabled>取消</button></div>
-</section>
-<section class="panel">
-  <h3 style="margin:0">第一页切割预览</h3><p id="previewInfo" class="hint">选择 PDF 后自动显示第一页的三个切割区域；调整白边或清晰度设置后也会自动更新。</p>
-  <div id="previewGrid" class="preview-grid"></div>
-</section>
-<section class="panel">
-  <div id="progressText" class="status">等待转换。</div><div class="progress"><div id="bar" class="bar"></div></div>
-  <p class="hint">所有处理均在浏览器本地完成，PDF 不会上传。转换时逐页渲染和释放临时画布；输出页面会暂存为 XTC 编码数据，最后组装成文件。</p>
-</section>
-</main><script type="module" src="./app.js"></script></body></html>
+
+</main>
+
+<script type="module" src="./app.js"></script>
+
+<script>
+const mode = document.getElementById('convertMode');
+const originalOptions = document.getElementById('originalOptions');
+
+function updateMode() {
+  originalOptions.classList.toggle(
+    'hidden',
+    mode.value !== 'original'
+  );
+}
+
+mode.addEventListener('change', updateMode);
+updateMode();
+</script>
+
+</body>
+</html>
