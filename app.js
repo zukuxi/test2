@@ -318,12 +318,34 @@ function splitThree(page, trimMode, customDistance = 0) {
   const w = trimmed.width;
   const h = trimmed.height;
 
-  const cuts = [
-    0,
-    Math.round(w / 3),
-    Math.round(w * 2 / 3),
-    w
-  ];
+  // 在理论三等分线附近寻找墨迹最少的列，避免切线穿过整行文字。
+  // 搜索范围受相邻分段宽度约束，仍保持三段顺序和完整页面覆盖。
+  function findQuietCut(target, minX, maxX) {
+    const radius = Math.max(8, Math.round(w * 0.045));
+    const from = Math.max(minX, target - radius);
+    const to = Math.min(maxX, target + radius);
+    const data = trimmed.getContext('2d', { willReadFrequently: true })
+      .getImageData(0, 0, w, h).data;
+    let bestX = target, bestScore = Infinity;
+    const stride = Math.max(1, Math.floor(h / 700));
+    for (let x = from; x <= to; x++) {
+      let ink = 0;
+      for (let y = 0; y < h; y += stride) {
+        const i = (y * w + x) * 4;
+        const gray = (data[i] * 299 + data[i + 1] * 587 + data[i + 2] * 114) / 1000;
+        if (gray < 220) ink += (220 - gray) / 220;
+      }
+      // 微弱惩罚偏离理论切线，避免切到过窄的空白边缘。
+      const score = ink + Math.abs(x - target) * 0.025;
+      if (score < bestScore) { bestScore = score; bestX = x; }
+    }
+    return bestX;
+  }
+  const ideal1 = Math.round(w / 3), ideal2 = Math.round(w * 2 / 3);
+  const minPart = Math.round(w * 0.27);
+  const cut1 = findQuietCut(ideal1, minPart, w - minPart * 2);
+  const cut2 = findQuietCut(ideal2, cut1 + minPart, w - minPart);
+  const cuts = [0, cut1, cut2, w];
 
   const order = pageWasPortrait ? [2, 1, 0] : [0, 1, 2];
   const out = [];
@@ -510,6 +532,82 @@ function mergeAndExpandGraphicRegions(regions, width, height) {
   });
 }
 
+function detectTextGraphicRegions(items, viewport, scale) {
+  const boxes = (items || []).filter(it => it.str && it.str.trim()).map(it => {
+    const t = it.transform || [];
+    const size = Math.max(6, Math.hypot(t[2] || 0, t[3] || 0) * scale);
+    return {
+      text: it.str, x: (t[4] || 0) * scale,
+      y: viewport.height - (t[5] || 0) * scale,
+      w: Math.max(1, (it.width || size * it.str.length * .5) * scale),
+      h: Math.max(size, (it.height || size) * scale), size
+    };
+  }).sort((a,b) => a.y-b.y || a.x-b.x);
+  const rows = [];
+  for (const b of boxes) {
+    let row = rows.find(r => Math.abs(r.y-b.y) <= Math.max(3, Math.min(r.size,b.size)*.38));
+    if (!row) rows.push(row={y:b.y,size:b.size,items:[]});
+    row.items.push(b); row.y=row.items.reduce((v,x)=>v+x.y,0)/row.items.length;
+    row.size=Math.max(row.size,b.size);
+  }
+  rows.sort((a,b)=>a.y-b.y);
+  const regions=[];
+  // 表格：至少 4 行、每行多个独立单元格，且列起点在行间重复对齐。
+  let run=[];
+  const flush=()=>{
+    if (run.length>=4) {
+      const starts=[];
+      for (const r of run) for (const b of r.items) starts.push(b.x);
+      const clusters=[];
+      starts.sort((a,b)=>a-b).forEach(x=>{
+        let c=clusters.find(v=>Math.abs(v.mean-x)<14);
+        if(!c)clusters.push(c={mean:x,n:0});
+        c.mean=(c.mean*c.n+x)/(++c.n);
+      });
+      const aligned=clusters.filter(c=>c.n>=Math.max(3,Math.floor(run.length*.35)));
+      const avg=run.reduce((n,r)=>n+r.items.length,0)/run.length;
+      const numeric=run.reduce((n,r)=>n+r.items.filter(b=>/[0-9０-９%％]/.test(b.text)).length,0)/
+        Math.max(1,run.reduce((n,r)=>n+r.items.length,0));
+      if(avg>=3 && aligned.length>=2 && (numeric>.22 || aligned.length>=3)) {
+        const all=run.flatMap(r=>r.items);
+        const x=Math.max(0,Math.min(...all.map(b=>b.x))-12);
+        const y=Math.max(0,Math.min(...all.map(b=>b.y))-12);
+        const right=Math.min(viewport.width,Math.max(...all.map(b=>b.x+b.w))+18);
+        const bottom=Math.min(viewport.height,Math.max(...all.map(b=>b.y+b.h))+14);
+        regions.push({x,y,w:right-x,h:bottom-y});
+      }
+    }
+    run=[];
+  };
+  for(const r of rows){
+    const multi=r.items.length>=3;
+    const prev=run[run.length-1];
+    const gap=prev?r.y-prev.y:0;
+    if(multi && (!prev || gap<=Math.max(24,r.size*2.2))) run.push(r);
+    else { flush(); if(multi) run.push(r); }
+  }
+  flush();
+  // 数学公式：含运算符/关系符的独立行作为整体图片，边界随后再扩展。
+  for(const r of rows){
+    const text=r.items.map(b=>b.text).join('');
+    if(/[=≤≥≠≈±×÷√∑∫<>/·]/.test(text) && /[0-9A-Za-z]/.test(text) && text.length>=4){
+      const all=r.items;
+      const x=Math.max(0,Math.min(...all.map(b=>b.x))-18);
+      const y=Math.max(0,r.y-r.size*1.8);
+      const right=Math.min(viewport.width,Math.max(...all.map(b=>b.x+b.w))+24);
+      const bottom=Math.min(viewport.height,r.y+Math.max(...all.map(b=>b.h))+r.size*1.8);
+      regions.push({x,y,w:right-x,h:bottom-y});
+    }
+  }
+  return regions;
+}
+
+function normalizeBulletText(text) {
+  // 部分 PDF 字体的项目符号 ToUnicode 映射错误，会被提取成方框/叉号。
+  // 仅在行首且后面存在正文时纠正，避免改动正文中的方框符号。
+  return String(text || '').replace(/^([\s　]*)(?:\u25a0|\u25a1|\u25aa|\u25ab|\u2610|\u2612|\u2715|\u2716|\u00d7|\uf0b7|\uf0a7|\ufffd)(?=\s*\S)/u, '$1•');
+}
+
 async function renderReflowPages(pdf, n, scale) {
   const page = await pdf.getPage(n);
   const viewport = page.getViewport({ scale });
@@ -518,7 +616,8 @@ async function renderReflowPages(pdf, n, scale) {
     includeMarkedContent: true,
     disableCombineTextItems: true
   });
-  const items = (textContent.items || []).filter(item => item.str && item.str.trim());
+  const sourceItems = (textContent.items || []).filter(item => item.str && item.str.trim());
+  const items = sourceItems;
   if (!items.length) { page.cleanup(); return null; }
 
   let graphicLayer = null;
@@ -529,6 +628,7 @@ async function renderReflowPages(pdf, n, scale) {
     // 因此公式中的文字、表格单元格文字也会一起保留在图片块里。
     graphicLayer = await renderGraphicsLayer(page, viewport, pdfjs);
     graphicRegions = findGraphicRegions(graphicLayer);
+    graphicRegions.push(...detectTextGraphicRegions(sourceItems, viewport, scale));
     if (graphicRegions.length) {
       fullPageRaster = await renderFullPageRaster(page, viewport);
       graphicRegions = mergeAndExpandGraphicRegions(
