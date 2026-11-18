@@ -10,6 +10,8 @@ let running = false;
 let previewing = false;
 let pdfjsPromise = null;
 let previewTimer = null;
+let previewPending = false;
+let previewRevision = 0;
 
 let PAGE_W = 528;
 let PAGE_H = 792;
@@ -53,15 +55,18 @@ $('cancel').onclick = () => {
   const el = $(id);
   if (!el) return;
 
-  el.addEventListener('change', () => {
+  const schedulePreview = () => {
     updateOrientation();
     if (!chosen.length || running) return;
-
+    previewRevision++;
     clearTimeout(previewTimer);
     previewTimer = setTimeout(() => {
-      if (!previewing) previewFirst();
+      if (previewing) previewPending = true;
+      else previewFirst();
     }, 250);
-  });
+  };
+  el.addEventListener('input', schedulePreview);
+  el.addEventListener('change', schedulePreview);
 });
 
 function updateOrientation() {
@@ -306,76 +311,17 @@ function fitPage(src, width = PAGE_W, height = PAGE_H) {
 
 // 原样转换：竖版页面旋转后，必须从右向左输出。
 // 这样对应原 PDF 的顶部 → 中间 → 底部。
-// 在理想三等分线附近寻找整页墨迹最少的竖向空白带。
-// 原样模式的页面已经旋转为横向，因此竖向切线对应原文的行间位置。
-function findSafeCut(src, target, minX, maxX) {
-  const w = src.width;
-  const h = src.height;
-  const ctx = src.getContext('2d', { willReadFrequently: true });
-  const data = ctx.getImageData(0, 0, w, h).data;
-  const radius = Math.max(1, Math.round(w * 0.002));
-  const yStep = Math.max(1, Math.floor(h / 900));
-  const xStep = Math.max(1, Math.floor(radius / 2));
-  const displacementWeight = 0.055;
-
-  let bestX = Math.round(target);
-  let bestScore = Infinity;
-  const start = Math.max(radius + 1, Math.ceil(minX));
-  const end = Math.min(w - radius - 1, Math.floor(maxX));
-
-  for (let x = start; x <= end; x++) {
-    let dark = 0;
-    let total = 0;
-
-    for (let y = 0; y < h; y += yStep) {
-      for (let xx = x - radius; xx <= x + radius; xx += xStep) {
-        const i = (y * w + xx) * 4;
-        const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-        if (lum < 238) dark++;
-        total++;
-      }
-    }
-
-    const inkRatio = dark / Math.max(1, total);
-    const movePenalty = Math.abs(x - target) / Math.max(1, w) * displacementWeight;
-    const score = inkRatio + movePenalty;
-    if (score < bestScore) {
-      bestScore = score;
-      bestX = x;
-    }
-  }
-
-  // 只有候选位置确实比目标位置干净时才移动，避免无意义改变分割比例。
-  return bestX;
-}
-
 function splitThree(page, trimMode, customDistance = 0) {
   const trimmed = trimWhite(page, trimMode, customDistance);
   const w = trimmed.width;
   const h = trimmed.height;
-  const third = w / 3;
-  const search = w * 0.075;
 
-  let cut1 = findSafeCut(
-    trimmed, third,
-    third - search,
-    third + search
-  );
-  let cut2 = findSafeCut(
-    trimmed, third * 2,
-    third * 2 - search,
-    third * 2 + search
-  );
-
-  // 保证三块都保有足够宽度，防止复杂页面把两条切线挤到一起。
-  cut1 = Math.max(Math.round(w * 0.25), Math.min(Math.round(w * 0.42), cut1));
-  cut2 = Math.max(Math.round(w * 0.58), Math.min(Math.round(w * 0.75), cut2));
-  if (cut2 - cut1 < w * 0.22) {
-    cut1 = Math.round(w / 3);
-    cut2 = Math.round(w * 2 / 3);
-  }
-
-  const cuts = [0, cut1, cut2, w];
+  const cuts = [
+    0,
+    Math.round(w / 3),
+    Math.round(w * 2 / 3),
+    w
+  ];
 
   const order = pageWasPortrait ? [2, 1, 0] : [0, 1, 2];
   const out = [];
@@ -400,7 +346,6 @@ function splitThree(page, trimMode, customDistance = 0) {
   return out;
 }
 
-
 let pageWasPortrait = false;
 
 async function renderOriginalPage(pdf, n, scale, trimMode, customDistance) {
@@ -422,155 +367,254 @@ async function renderOriginalPage(pdf, n, scale, trimMode, customDistance) {
 
 // 文字型 PDF 重新排版。
 // 按文字坐标恢复行，再按 X3 页面高度重新分页。
+async function renderGraphicsLayer(page, viewport, pdfjs) {
+  // Render only non-text operators. PDF.js 5.4.624 exposes operationsFilter;
+  // the operator list is read with the same display intent as render().
+  const opList = await page.getOperatorList({ intent: 'display' });
+  const textOps = new Set([
+    pdfjs.OPS.showText,
+    pdfjs.OPS.showSpacedText,
+    pdfjs.OPS.nextLineShowText,
+    pdfjs.OPS.nextLineSetSpacingShowText
+  ].filter(v => v !== undefined));
+  if (!textOps.size) return null;
+
+  const layer = canvas(viewport.width, viewport.height);
+  const ctx = layer.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, layer.width, layer.height);
+  await page.render({
+    canvasContext: ctx,
+    viewport,
+    intent: 'display',
+    background: 'rgb(255,255,255)',
+    operationsFilter(index) {
+      return !textOps.has(opList.fnArray[index]);
+    }
+  }).promise;
+  return layer;
+}
+
+function findGraphicRegions(layer) {
+  if (!layer) return [];
+  const { width: w, height: h } = layer;
+  const data = layer.getContext('2d', { willReadFrequently: true })
+    .getImageData(0, 0, w, h).data;
+  const row = new Uint8Array(h);
+  const left = new Int32Array(h).fill(w);
+  const right = new Int32Array(h).fill(-1);
+
+  // Text operators are filtered out, so the remaining dark pixels represent
+  // placed images, diagrams, rules and vector artwork.
+  for (let y = 0; y < h; y++) {
+    let count = 0;
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const gray = (data[i] * 299 + data[i + 1] * 587 + data[i + 2] * 114) / 1000;
+      if (gray < 218) {
+        count++;
+        if (x < left[y]) left[y] = x;
+        if (x > right[y]) right[y] = x;
+      }
+    }
+    if (count >= 2) row[y] = 1;
+  }
+
+  const bands = [];
+  let band = null;
+  for (let y = 0; y < h; y++) {
+    if (row[y]) {
+      if (!band) band = { x: left[y], y0: y, x2: right[y], y2: y, last: y };
+      else if (y - band.last <= 22) {
+        band.x = Math.min(band.x, left[y]);
+        band.x2 = Math.max(band.x2, right[y]);
+        band.y2 = y;
+        band.last = y;
+      } else {
+        bands.push(band);
+        band = { x: left[y], y0: y, x2: right[y], y2: y, last: y };
+      }
+    }
+  }
+  if (band) bands.push(band);
+
+  // Merge nearby bands when their horizontal extents overlap: table borders
+  // and cell rules often form several separated horizontal strokes.
+  const merged = [];
+  for (const b of bands) {
+    const prev = merged[merged.length - 1];
+    const overlap = prev && Math.min(prev.x2, b.x2) - Math.max(prev.x, b.x) >
+      Math.min(prev.x2 - prev.x, b.x2 - b.x) * 0.35;
+    if (prev && b.y0 - prev.y2 <= 30 && overlap) {
+      prev.x = Math.min(prev.x, b.x);
+      prev.x2 = Math.max(prev.x2, b.x2);
+      prev.y2 = b.y2;
+    } else merged.push({ ...b });
+  }
+
+  return merged.map(b => ({
+    x: Math.max(0, b.x - 5), y: Math.max(0, b.y0 - 5),
+    w: Math.min(w - b.x + 5, b.x2 - b.x + 11),
+    h: Math.min(h - b.y0 + 5, b.y2 - b.y0 + 11)
+  })).filter(r => r.w >= 18 && r.h >= 12 && r.w * r.h >= 450);
+}
+
 async function renderReflowPages(pdf, n, scale) {
   const page = await pdf.getPage(n);
+  const viewport = page.getViewport({ scale });
+  const pdfjs = await getPdfjs();
   const textContent = await page.getTextContent({
     includeMarkedContent: true,
-    disableNormalization: false
+    disableCombineTextItems: true
   });
+  const items = (textContent.items || []).filter(item => item.str && item.str.trim());
+  if (!items.length) { page.cleanup(); return null; }
 
-  const items = (textContent.items || []).filter(
-    item => item.str && item.str.trim()
-  );
-
-  if (!items.length || items.some(item => /\uFFFD/.test(item.str || ''))) {
-    page.cleanup();
-    return null;
-  }
-
-  // 公式、表格、图表、插图通常包含图像或矢量绘图指令。
-  // 这类页面整体回退原样，避免把公式拆成字符、丢掉线条或嵌入小图。
-  let hasNonTextGraphics = false;
+  let graphicLayer = null;
+  let graphicRegions = [];
   try {
-    const ops = await page.getOperatorList();
-    const pdfjs = await getPdfjs();
-    const graphicOps = [
-      'paintImageXObject', 'paintJpegXObject', 'paintImageMaskXObject',
-      'paintInlineImageXObject', 'paintImageXObjectRepeat',
-      'paintInlineImageXObjectGroup', 'constructPath', 'stroke',
-      'closeStroke', 'fill', 'eoFill', 'fillStroke', 'eoFillStroke',
-      'closeFillStroke', 'closeEOFillStroke', 'shadingFill',
-      'paintFormXObjectBegin'
-    ].map(name => pdfjs.OPS[name]).filter(v => v !== undefined);
-    hasNonTextGraphics = ops.fnArray.some(fn => graphicOps.includes(fn));
-  } catch (_) {
-    hasNonTextGraphics = true;
-  }
-
-  if (hasNonTextGraphics) {
+    graphicLayer = await renderGraphicsLayer(page, viewport, pdfjs);
+    graphicRegions = findGraphicRegions(graphicLayer);
+  } catch (e) {
+    // If selective rendering is unsupported or the PDF has unusual operators,
+    // do not silently lose graphics: preserve the page in original mode.
+    graphicLayer?.remove?.();
     page.cleanup();
     return null;
   }
 
-  const viewport = page.getViewport({ scale });
-  const styles = textContent.styles || {};
-  const linesByY = [];
-
-  for (const item of items) {
+  const textBlocks = [];
+  const sorted = items.map(item => {
     const tx = item.transform || [];
-    const x = tx[4] || 0;
-    const y = tx[5] || 0;
-    const size = Math.max(7, Math.abs(tx[3] || tx[0] || item.height || 10) * scale);
-    const baseline = viewport.height - y * scale;
-    const style = styles[item.fontName] || {};
+    const fontSize = Math.max(7, Math.hypot(tx[2] || 0, tx[3] || 0) * scale);
+    const x = (tx[4] || 0) * scale;
+    const y = viewport.height - (tx[5] || 0) * scale;
+    const w = Math.max(1, (item.width || fontSize * (item.str || '').length * 0.5) * scale);
+    const h = Math.max(fontSize, (item.height || fontSize) * scale);
+    return { text: item.str, x, y, w, h, size: fontSize, hasEOL: !!item.hasEOL };
+  }).sort((a,b) => a.y - b.y || a.x - b.x);
 
-    // 保留 PDF.js 的字体族信息，同时给中日韩字符提供系统字体回退。
-    const family = (style.fontFamily || '').replace(/["'`]/g, '').trim();
-    const fontFamily = family
-      ? `"${family}", "Noto Sans CJK SC", "Noto Sans CJK JP", "Microsoft YaHei", "SimSun", "Noto Sans Math", "Noto Sans Symbols 2", sans-serif`
-      : '"Noto Sans CJK SC", "Noto Sans CJK JP", "Microsoft YaHei", "SimSun", "Noto Sans Math", "Noto Sans Symbols 2", sans-serif';
-
-    let line = linesByY.find(g => Math.abs(g.baseline - baseline) < Math.max(2.5, size * 0.38));
-    if (!line) {
-      line = { baseline, items: [], size };
-      linesByY.push(line);
-    }
-
-    line.items.push({
-      x: x * scale,
-      width: Math.abs((item.width || 0) * scale),
-      text: item.str,
-      size,
-      fontFamily,
-      hasEOL: !!item.hasEOL
-    });
-    line.size = Math.max(line.size, size);
-  }
-
-  // 按阅读坐标排序；同一基线内按 x 排序，并用真实间距恢复词间空隙。
-  linesByY.sort((a, b) => a.baseline - b.baseline);
+  // Adaptive Japanese/CJK line grouping: baseline tolerance scales with font
+  // height, but never expands so far that adjacent printed lines collapse.
   const lines = [];
-  for (const line of linesByY) {
-    line.items.sort((a, b) => a.x - b.x);
-    let text = '';
-    let previous = null;
-    for (const part of line.items) {
-      if (previous) {
-        const gap = part.x - (previous.x + previous.width);
-        const isCjk = /[\u2e80-\u9fff\uf900-\ufaff]/.test(text + part.text);
-        if (gap > Math.max(3, line.size * 0.55) && !isCjk) text += ' ';
-      }
-      text += part.text;
-      previous = part;
+  for (const it of sorted) {
+    let best = null, bestDelta = Infinity;
+    for (const line of lines) {
+      const tolerance = Math.max(2.2, Math.min(7, Math.min(line.size, it.size) * 0.28));
+      const delta = Math.abs(line.y - it.y);
+      if (delta <= tolerance && delta < bestDelta) { best = line; bestDelta = delta; }
     }
-    if (text.trim()) {
-      const first = line.items[0];
-      lines.push({ text, size: line.size, fontFamily: first.fontFamily });
+    if (!best) {
+      best = { y: it.y, size: it.size, items: [] };
+      lines.push(best);
     }
+    best.items.push(it);
+    best.size = Math.max(best.size, it.size);
+    best.y = best.items.reduce((sum, v) => sum + v.y, 0) / best.items.length;
+  }
+  lines.sort((a,b) => a.y - b.y);
+  const splitLines = [];
+  for (const line of lines) {
+    line.items.sort((a,b) => a.x - b.x);
+    let segment = [];
+    const flush = () => {
+      if (!segment.length) return;
+      const x = Math.min(...segment.map(v => v.x));
+      splitLines.push({
+        y: line.y,
+        text: segment.map(v => v.text).join(''),
+        size: Math.max(...segment.map(v => v.size)),
+        x,
+        w: Math.max(...segment.map(v => v.x + v.w)) - x,
+        h: Math.max(...segment.map(v => v.h)),
+        end: segment.some(v => v.hasEOL)
+      });
+      segment = [];
+    };
+    for (const item of line.items) {
+      const prev = segment[segment.length - 1];
+      const gap = prev ? item.x - (prev.x + prev.w) : 0;
+      // A large horizontal gap usually marks a separate column or text block,
+      // not a Japanese continuation of the same printed line.
+      if (prev && gap > Math.max(18, Math.min(prev.size, item.size) * 2.2)) flush();
+      segment.push(item);
+    }
+    flush();
   }
 
-  page.cleanup();
-  if (!lines.length) return null;
+  // Image/diagram/table blocks are inserted at their original vertical
+  // position in the reflow stream. Text overlapping a captured graphic is
+  // suppressed to avoid printing the same table/formula twice.
+  const blocks = [];
+  for (const line of splitLines) {
+    const overlapsGraphic = graphicRegions.some(r => {
+      const ix = Math.max(0, Math.min(line.x + line.w, r.x + r.w) - Math.max(line.x, r.x));
+      const iy = Math.max(0, Math.min(line.y + line.h, r.y + r.h) - Math.max(line.y, r.y));
+      return ix * iy > Math.min(line.w * line.h, r.w * r.h) * 0.12;
+    });
+    if (!overlapsGraphic && line.text.trim()) {
+      blocks.push({ type: 'text', y: line.y, text: line.text, size: line.size });
+    }
+  }
+  for (const r of graphicRegions) blocks.push({ type: 'image', y: r.y, rect: r });
+  blocks.sort((a,b) => a.y - b.y || (a.type === 'image' ? -1 : 1));
 
   const pages = [];
   let current = canvas(PAGE_W, PAGE_H);
   let ctx = current.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, PAGE_W, PAGE_H);
+  let y = 28;
   const margin = 28;
   const usableWidth = PAGE_W - margin * 2;
-  let y = margin;
+  const sourceScale = PAGE_H / Math.max(1, viewport.height);
 
-  function newPage() {
+  function nextPage() {
     pages.push(current);
     current = canvas(PAGE_W, PAGE_H);
     ctx = current.getContext('2d');
-    y = margin;
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, PAGE_W, PAGE_H);
+    y = 28;
   }
-
-  function drawWrappedLine(text, size, fontFamily) {
-    const fontSize = Math.max(11, Math.min(25, size * 0.82));
-    ctx.font = `${fontSize}px ${fontFamily}`;
+  function writeText(text, size) {
+    const fontSize = Math.max(10, Math.min(24, size * 0.82));
+    ctx.font = `${fontSize}px sans-serif`;
     ctx.fillStyle = '#111';
-    ctx.textBaseline = 'alphabetic';
-
-    // 按字素逐步换行，不拆 surrogate pair；CJK 不强行插入空格。
     const chars = Array.from(text);
-    let buffer = '';
+    let buf = '';
     for (const ch of chars) {
-      const next = buffer + ch;
-      if (buffer && ctx.measureText(next).width > usableWidth) {
-        if (y + fontSize + 8 > PAGE_H - margin) newPage();
-        ctx.font = `${fontSize}px ${fontFamily}`;
-        ctx.fillText(buffer, margin, y + fontSize);
-        y += fontSize * 1.48;
-        buffer = ch;
-      } else {
-        buffer = next;
-      }
+      if (buf && ctx.measureText(buf + ch).width > usableWidth) {
+        if (y + fontSize * 1.6 > PAGE_H - margin) nextPage();
+        ctx.fillText(buf, margin, y + fontSize);
+        y += fontSize * 1.42;
+        buf = ch;
+      } else buf += ch;
     }
-    if (buffer) {
-      if (y + fontSize + 8 > PAGE_H - margin) newPage();
-      ctx.font = `${fontSize}px ${fontFamily}`;
-      ctx.fillText(buffer, margin, y + fontSize);
-      y += fontSize * 1.48;
+    if (buf) {
+      if (y + fontSize * 1.6 > PAGE_H - margin) nextPage();
+      ctx.fillText(buf, margin, y + fontSize);
+      y += fontSize * 1.42;
     }
   }
 
-  for (const line of lines) {
-    drawWrappedLine(line.text, line.size, line.fontFamily);
+  for (const block of blocks) {
+    if (block.type === 'text') {
+      writeText(block.text, block.size);
+      continue;
+    }
+    const r = block.rect;
+    const image = canvas(r.w, r.h);
+    image.getContext('2d').drawImage(graphicLayer, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+    const ratio = Math.min(usableWidth / r.w, (PAGE_H - margin * 2) / r.h, 1.8);
+    const dw = Math.max(1, r.w * ratio), dh = Math.max(1, r.h * ratio);
+    if (y + dh + 8 > PAGE_H - margin) nextPage();
+    ctx.drawImage(image, margin, y, dw, dh);
+    y += dh + 10;
+    image.width = 1; image.height = 1;
   }
 
-  if (y > margin || !pages.length) pages.push(current);
-  else { current.width = 1; current.height = 1; }
+  if (y > 28 || !pages.length) pages.push(current);
+  graphicLayer.width = 1; graphicLayer.height = 1;
+  page.cleanup();
   return pages;
 }
 
@@ -955,7 +999,7 @@ async function makeOutputPage(c, depth, algo, contrast, brightness) {
     : packXTG(processed, w, h);
 }
 
-async function createPagesForPdf(pdf, options, limit = Infinity, keepCanvases = false) {
+async function createPagesForPdf(pdf, options, limit = Infinity) {
   const output = [];
   const pageTotal = pdf.numPages;
 
@@ -1003,11 +1047,8 @@ async function createPagesForPdf(pdf, options, limit = Infinity, keepCanvases = 
         canvas: c
       });
 
-      // 预览需要在生成 PNG 前保留画布；正式转换仍立即释放，控制内存。
-      if (!keepCanvases) {
-        c.width = 1;
-        c.height = 1;
-      }
+      c.width = 1;
+      c.height = 1;
     }
 
     canvases.length = 0;
@@ -1036,9 +1077,12 @@ function getOptions() {
 }
 
 async function previewFirst() {
-  if (!chosen.length || previewing || running) return;
+  if (!chosen.length || running) return;
+  if (previewing) { previewPending = true; return; }
 
   previewing = true;
+  previewPending = false;
+  const thisRevision = previewRevision;
   $('previewBtn').disabled = true;
   $('previewGrid').innerHTML = '';
   $('previewInfo').textContent = '正在生成前 10 张最终输出页面…';
@@ -1049,7 +1093,11 @@ async function previewFirst() {
     const options = getOptions();
     pdf = await openPdf(chosen[0]);
 
-    const pages = await createPagesForPdf(pdf, options, 10, true);
+    const pages = await createPagesForPdf(pdf, options, 10);
+    if (thisRevision !== previewRevision || previewPending) {
+      pages.forEach(p => { p.canvas.width = 1; p.canvas.height = 1; });
+      return;
+    }
 
     for (let i = 0; i < pages.length; i++) {
       const c = pages[i].canvas;
@@ -1087,6 +1135,11 @@ async function previewFirst() {
 
     previewing = false;
     $('previewBtn').disabled = running || !chosen.length;
+    if (previewPending && !running && chosen.length) {
+      previewPending = false;
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(() => previewFirst(), 0);
+    }
   }
 }
 
