@@ -1083,7 +1083,7 @@ async function makeOutputPage(c, depth, algo, contrast, brightness) {
     : packXTG(processed, w, h);
 }
 
-async function createPagesForPdf(pdf, options, limit = Infinity) {
+async function createPagesForPdf(pdf, options, limit = Infinity, preserveCanvases = false) {
   const output = [];
   const pageTotal = pdf.numPages;
 
@@ -1131,8 +1131,12 @@ async function createPagesForPdf(pdf, options, limit = Infinity) {
         canvas: c
       });
 
-      c.width = 1;
-      c.height = 1;
+      // 正式转换在编码后立即释放画布；预览必须保留画布，
+      // 因为后续要从它生成灰阶预览图，不能提前缩成 1×1。
+      if (!preserveCanvases) {
+        c.width = 1;
+        c.height = 1;
+      }
     }
 
     canvases.length = 0;
@@ -1177,7 +1181,7 @@ async function previewFirst() {
     const options = getOptions();
     pdf = await openPdf(chosen[0]);
 
-    const pages = await createPagesForPdf(pdf, options, 10);
+    const pages = await createPagesForPdf(pdf, options, 10, true);
     if (thisRevision !== previewRevision || previewPending) {
       pages.forEach(p => { p.canvas.width = 1; p.canvas.height = 1; });
       return;
