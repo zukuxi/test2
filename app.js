@@ -306,17 +306,76 @@ function fitPage(src, width = PAGE_W, height = PAGE_H) {
 
 // 原样转换：竖版页面旋转后，必须从右向左输出。
 // 这样对应原 PDF 的顶部 → 中间 → 底部。
+// 在理想三等分线附近寻找整页墨迹最少的竖向空白带。
+// 原样模式的页面已经旋转为横向，因此竖向切线对应原文的行间位置。
+function findSafeCut(src, target, minX, maxX) {
+  const w = src.width;
+  const h = src.height;
+  const ctx = src.getContext('2d', { willReadFrequently: true });
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const radius = Math.max(1, Math.round(w * 0.002));
+  const yStep = Math.max(1, Math.floor(h / 900));
+  const xStep = Math.max(1, Math.floor(radius / 2));
+  const displacementWeight = 0.055;
+
+  let bestX = Math.round(target);
+  let bestScore = Infinity;
+  const start = Math.max(radius + 1, Math.ceil(minX));
+  const end = Math.min(w - radius - 1, Math.floor(maxX));
+
+  for (let x = start; x <= end; x++) {
+    let dark = 0;
+    let total = 0;
+
+    for (let y = 0; y < h; y += yStep) {
+      for (let xx = x - radius; xx <= x + radius; xx += xStep) {
+        const i = (y * w + xx) * 4;
+        const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        if (lum < 238) dark++;
+        total++;
+      }
+    }
+
+    const inkRatio = dark / Math.max(1, total);
+    const movePenalty = Math.abs(x - target) / Math.max(1, w) * displacementWeight;
+    const score = inkRatio + movePenalty;
+    if (score < bestScore) {
+      bestScore = score;
+      bestX = x;
+    }
+  }
+
+  // 只有候选位置确实比目标位置干净时才移动，避免无意义改变分割比例。
+  return bestX;
+}
+
 function splitThree(page, trimMode, customDistance = 0) {
   const trimmed = trimWhite(page, trimMode, customDistance);
   const w = trimmed.width;
   const h = trimmed.height;
+  const third = w / 3;
+  const search = w * 0.075;
 
-  const cuts = [
-    0,
-    Math.round(w / 3),
-    Math.round(w * 2 / 3),
-    w
-  ];
+  let cut1 = findSafeCut(
+    trimmed, third,
+    third - search,
+    third + search
+  );
+  let cut2 = findSafeCut(
+    trimmed, third * 2,
+    third * 2 - search,
+    third * 2 + search
+  );
+
+  // 保证三块都保有足够宽度，防止复杂页面把两条切线挤到一起。
+  cut1 = Math.max(Math.round(w * 0.25), Math.min(Math.round(w * 0.42), cut1));
+  cut2 = Math.max(Math.round(w * 0.58), Math.min(Math.round(w * 0.75), cut2));
+  if (cut2 - cut1 < w * 0.22) {
+    cut1 = Math.round(w / 3);
+    cut2 = Math.round(w * 2 / 3);
+  }
+
+  const cuts = [0, cut1, cut2, w];
 
   const order = pageWasPortrait ? [2, 1, 0] : [0, 1, 2];
   const out = [];
@@ -340,6 +399,7 @@ function splitThree(page, trimMode, customDistance = 0) {
 
   return out;
 }
+
 
 let pageWasPortrait = false;
 
@@ -365,145 +425,152 @@ async function renderOriginalPage(pdf, n, scale, trimMode, customDistance) {
 async function renderReflowPages(pdf, n, scale) {
   const page = await pdf.getPage(n);
   const textContent = await page.getTextContent({
-    includeMarkedContent: true
+    includeMarkedContent: true,
+    disableNormalization: false
   });
 
   const items = (textContent.items || []).filter(
     item => item.str && item.str.trim()
   );
 
-  // 无文字层：扫描 PDF 无法进行文字重排。
-  if (!items.length) {
+  if (!items.length || items.some(item => /\uFFFD/.test(item.str || ''))) {
     page.cleanup();
     return null;
   }
 
-  // 检查是否存在图片对象。
-  // 混合图文页保留原样，避免重排时丢失插图。
-  let hasImages = false;
-
+  // 公式、表格、图表、插图通常包含图像或矢量绘图指令。
+  // 这类页面整体回退原样，避免把公式拆成字符、丢掉线条或嵌入小图。
+  let hasNonTextGraphics = false;
   try {
     const ops = await page.getOperatorList();
     const pdfjs = await getPdfjs();
-
-    const imageOps = [
-      pdfjs.OPS.paintImageXObject,
-      pdfjs.OPS.paintJpegXObject,
-      pdfjs.OPS.paintImageMaskXObject,
-      pdfjs.OPS.paintInlineImageXObject
-    ].filter(v => v !== undefined);
-
-    hasImages = ops.fnArray.some(fn => imageOps.includes(fn));
+    const graphicOps = [
+      'paintImageXObject', 'paintJpegXObject', 'paintImageMaskXObject',
+      'paintInlineImageXObject', 'paintImageXObjectRepeat',
+      'paintInlineImageXObjectGroup', 'constructPath', 'stroke',
+      'closeStroke', 'fill', 'eoFill', 'fillStroke', 'eoFillStroke',
+      'closeFillStroke', 'closeEOFillStroke', 'shadingFill',
+      'paintFormXObjectBegin'
+    ].map(name => pdfjs.OPS[name]).filter(v => v !== undefined);
+    hasNonTextGraphics = ops.fnArray.some(fn => graphicOps.includes(fn));
   } catch (_) {
-    hasImages = true;
+    hasNonTextGraphics = true;
   }
 
-  if (hasImages) {
+  if (hasNonTextGraphics) {
     page.cleanup();
     return null;
   }
 
   const viewport = page.getViewport({ scale });
-  const groups = [];
+  const styles = textContent.styles || {};
+  const linesByY = [];
 
   for (const item of items) {
     const tx = item.transform || [];
     const x = tx[4] || 0;
     const y = tx[5] || 0;
-    const fontSize = Math.max(8, Math.abs(tx[3] || tx[0] || 10));
+    const size = Math.max(7, Math.abs(tx[3] || tx[0] || item.height || 10) * scale);
+    const baseline = viewport.height - y * scale;
+    const style = styles[item.fontName] || {};
 
-    const vx = x * scale;
-    const vy = viewport.height - y * scale;
-    const size = fontSize * scale;
+    // 保留 PDF.js 的字体族信息，同时给中日韩字符提供系统字体回退。
+    const family = (style.fontFamily || '').replace(/["'`]/g, '').trim();
+    const fontFamily = family
+      ? `"${family}", "Noto Sans CJK SC", "Noto Sans CJK JP", "Microsoft YaHei", "SimSun", "Noto Sans Math", "Noto Sans Symbols 2", sans-serif`
+      : '"Noto Sans CJK SC", "Noto Sans CJK JP", "Microsoft YaHei", "SimSun", "Noto Sans Math", "Noto Sans Symbols 2", sans-serif';
 
-    let line = groups.find(g => Math.abs(g.y - vy) < size * 0.55);
-
+    let line = linesByY.find(g => Math.abs(g.baseline - baseline) < Math.max(2.5, size * 0.38));
     if (!line) {
-      line = { y: vy, items: [], size };
-      groups.push(line);
+      line = { baseline, items: [], size };
+      linesByY.push(line);
     }
 
     line.items.push({
-      x: vx,
+      x: x * scale,
+      width: Math.abs((item.width || 0) * scale),
       text: item.str,
-      size
+      size,
+      fontFamily,
+      hasEOL: !!item.hasEOL
     });
-
     line.size = Math.max(line.size, size);
   }
 
-  groups.sort((a, b) => a.y - b.y);
-
-  for (const line of groups) {
+  // 按阅读坐标排序；同一基线内按 x 排序，并用真实间距恢复词间空隙。
+  linesByY.sort((a, b) => a.baseline - b.baseline);
+  const lines = [];
+  for (const line of linesByY) {
     line.items.sort((a, b) => a.x - b.x);
+    let text = '';
+    let previous = null;
+    for (const part of line.items) {
+      if (previous) {
+        const gap = part.x - (previous.x + previous.width);
+        const isCjk = /[\u2e80-\u9fff\uf900-\ufaff]/.test(text + part.text);
+        if (gap > Math.max(3, line.size * 0.55) && !isCjk) text += ' ';
+      }
+      text += part.text;
+      previous = part;
+    }
+    if (text.trim()) {
+      const first = line.items[0];
+      lines.push({ text, size: line.size, fontFamily: first.fontFamily });
+    }
   }
 
-  const lines = groups.map(line => {
-    return {
-      text: line.items.map(v => v.text).join(''),
-      size: line.size
-    };
-  }).filter(line => line.text.trim());
-
   page.cleanup();
-
   if (!lines.length) return null;
 
   const pages = [];
   let current = canvas(PAGE_W, PAGE_H);
   let ctx = current.getContext('2d');
-
-  let y = 28;
   const margin = 28;
   const usableWidth = PAGE_W - margin * 2;
+  let y = margin;
 
   function newPage() {
     pages.push(current);
     current = canvas(PAGE_W, PAGE_H);
     ctx = current.getContext('2d');
-    y = 28;
+    y = margin;
   }
 
-  function drawTextLine(text, size) {
+  function drawWrappedLine(text, size, fontFamily) {
     const fontSize = Math.max(11, Math.min(25, size * 0.82));
-
-    ctx.font = `${fontSize}px sans-serif`;
+    ctx.font = `${fontSize}px ${fontFamily}`;
     ctx.fillStyle = '#111';
+    ctx.textBaseline = 'alphabetic';
 
+    // 按字素逐步换行，不拆 surrogate pair；CJK 不强行插入空格。
     const chars = Array.from(text);
     let buffer = '';
-
     for (const ch of chars) {
       const next = buffer + ch;
-
-      if (
-        buffer &&
-        ctx.measureText(next).width > usableWidth
-      ) {
+      if (buffer && ctx.measureText(next).width > usableWidth) {
         if (y + fontSize + 8 > PAGE_H - margin) newPage();
-
+        ctx.font = `${fontSize}px ${fontFamily}`;
         ctx.fillText(buffer, margin, y + fontSize);
-        y += fontSize * 1.45;
+        y += fontSize * 1.48;
         buffer = ch;
       } else {
         buffer = next;
       }
     }
-
     if (buffer) {
       if (y + fontSize + 8 > PAGE_H - margin) newPage();
-
+      ctx.font = `${fontSize}px ${fontFamily}`;
       ctx.fillText(buffer, margin, y + fontSize);
-      y += fontSize * 1.45;
+      y += fontSize * 1.48;
     }
   }
 
   for (const line of lines) {
-    drawTextLine(line.text, line.size);
+    drawWrappedLine(line.text, line.size, line.fontFamily);
   }
 
-  if (y > 28 || !pages.length) pages.push(current);
-
+  if (y > margin || !pages.length) pages.push(current);
+  else { current.width = 1; current.height = 1; }
   return pages;
 }
 
