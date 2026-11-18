@@ -202,9 +202,7 @@ button.danger {
 .preview-card img {
   display: block;
   width: 100%;
-  max-width: 100%;
   height: auto;
-  aspect-ratio: auto;
   object-fit: contain;
   background: white;
   border-radius: 3px;
@@ -392,7 +390,7 @@ button.danger {
 
     <div class="hint">
       原样转换：保留 PDF 原有页面内容，按原有方式拆分输出。
-      重新排版：尝试提取 PDF 文字并重新分页；扫描页和复杂图文页会回退为原样页面。
+      重新排版：提取文字并重新分页；图表、表格和公式区域尽量作为局部图片嵌入文字流。无文字层的扫描页才回退为原样页面。
       横屏或竖屏会决定最终 X3 页面尺寸。
     </div>
   </section>

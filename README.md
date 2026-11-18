@@ -29,8 +29,10 @@ https://zukuxi.github.io/test2/
 - 尝试提取 PDF 中的文字内容。
 - 将文字重新排列到 X3 页面中。
 - 自动换行并生成新的页面。
-- 对于扫描页面或包含复杂图片对象的页面，回退到原样转换，避免丢失内容。
-- 复杂表格、混合图文和特殊排版不保证完全还原。
+- 图表、表格线条、公式图形等区域会尝试识别为局部图片，并嵌入重新排版后的文字流。
+- 图片块使用原页面对应区域的完整栅格内容，因此会保留区域内的文字、符号和表格单元格内容。
+- 扫描页面没有可提取文字层时，才会回退到原样转换。
+- 多栏排版及边界不明显的复杂图文仍可能需要人工检查。
 
 ### 2. Page orientation / 页面方向
 
@@ -103,8 +105,10 @@ https://zukuxi.github.io/test2/
 
 - Reflow works best with PDFs containing selectable text.
 - Scanned PDFs generally do not contain a usable text layer.
-- Pages containing complex images may fall back to original-page conversion.
-- Complex tables and multi-column layouts may not retain their original structure.
+- Figure, table, and formula regions are detected as local image blocks and inserted into the reflowed text stream where possible.
+- Crops are taken from the full rendered page so text and symbols inside those regions are retained.
+- Only pages without an extractable text layer (such as scanned pages) fall back to original-page conversion.
+- Multi-column layouts and graphics without clear boundaries may still need manual review.
 - Large PDFs may require substantial browser memory.
 - Conversion speed depends on the device, browser, PDF complexity, and rendering scale.
 
