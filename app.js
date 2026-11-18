@@ -50,7 +50,7 @@ $('cancel').onclick = () => {
 [
   'depth', 'trim', 'trimDistance', 'scale',
   'dither', 'contrast', 'brightness',
-  'convertMode', 'orientation'
+  'convertMode', 'orientation', 'textScale'
 ].forEach(id => {
   const el = $(id);
   if (!el) return;
@@ -392,16 +392,20 @@ async function renderOriginalPage(pdf, n, scale, trimMode, customDistance) {
 // 文字型 PDF 重新排版。
 // 按文字坐标恢复行，再按 X3 页面高度重新分页。
 async function renderGraphicsLayer(page, viewport, pdfjs) {
-  // Render only non-text operators. PDF.js 5.4.624 exposes operationsFilter;
-  // the operator list is read with the same display intent as render().
+  // 只把 PDF 中真正嵌入的位图对象作为图片候选。
+  // 不再把所有非文字绘图指令都当成图片：部分 PDF（尤其日文 PDF）
+  // 会用路径/Type3 字形绘制正文，旧逻辑会把整段正文误判成图片。
   const opList = await page.getOperatorList({ intent: 'display' });
-  const textOps = new Set([
-    pdfjs.OPS.showText,
-    pdfjs.OPS.showSpacedText,
-    pdfjs.OPS.nextLineShowText,
-    pdfjs.OPS.nextLineSetSpacingShowText
+  const imageOps = new Set([
+    pdfjs.OPS.paintImageXObject,
+    pdfjs.OPS.paintJpegXObject,
+    pdfjs.OPS.paintImageMaskXObject,
+    pdfjs.OPS.paintInlineImageXObject,
+    pdfjs.OPS.paintSolidColorImageMask,
+    pdfjs.OPS.paintImageXObjectRepeat,
+    pdfjs.OPS.paintImageMaskXObjectRepeat
   ].filter(v => v !== undefined));
-  if (!textOps.size) return null;
+  if (!imageOps.size || !opList.fnArray.some(op => imageOps.has(op))) return null;
 
   const layer = canvas(viewport.width, viewport.height);
   const ctx = layer.getContext('2d', { willReadFrequently: true });
@@ -413,7 +417,7 @@ async function renderGraphicsLayer(page, viewport, pdfjs) {
     intent: 'display',
     background: 'rgb(255,255,255)',
     operationsFilter(index) {
-      return !textOps.has(opList.fnArray[index]);
+      return imageOps.has(opList.fnArray[index]);
     }
   }).promise;
   return layer;
@@ -568,7 +572,13 @@ function detectTextGraphicRegions(items, viewport, scale) {
       const avg=run.reduce((n,r)=>n+r.items.length,0)/run.length;
       const numeric=run.reduce((n,r)=>n+r.items.filter(b=>/[0-9０-９%％]/.test(b.text)).length,0)/
         Math.max(1,run.reduce((n,r)=>n+r.items.length,0));
-      if(avg>=3 && aligned.length>=2 && (numeric>.22 || aligned.length>=3)) {
+      const numericRows = run.filter(r =>
+        r.items.filter(b => /[0-9０-９%％]/.test(b.text)).length >= 2
+      ).length;
+      // 正文行即使被 PDF 拆成多个文字对象，也不应自动变成图片。
+      // 表格必须同时具备重复列对齐、足够多的数值单元格行和多列结构。
+      if(avg>=3.2 && aligned.length>=3 && numeric>.28 &&
+         numericRows>=Math.max(3, Math.ceil(run.length*.45))) {
         const all=run.flatMap(r=>r.items);
         const x=Math.max(0,Math.min(...all.map(b=>b.x))-12);
         const y=Math.max(0,Math.min(...all.map(b=>b.y))-12);
@@ -608,7 +618,7 @@ function normalizeBulletText(text) {
   return String(text || '').replace(/^([\s　]*)(?:\u25a0|\u25a1|\u25aa|\u25ab|\u2610|\u2612|\u2715|\u2716|\u00d7|\uf0b7|\uf0a7|\ufffd)(?=\s*\S)/u, '$1•');
 }
 
-async function renderReflowPages(pdf, n, scale) {
+async function renderReflowPages(pdf, n, scale, textScale = 1) {
   const page = await pdf.getPage(n);
   const viewport = page.getViewport({ scale });
   const pdfjs = await getPdfjs();
@@ -758,7 +768,7 @@ async function renderReflowPages(pdf, n, scale) {
     y = 28;
   }
   function writeText(text, size) {
-    const fontSize = Math.max(10, Math.min(24, size * 0.82));
+    const fontSize = Math.max(8, Math.min(30, size * 0.82 * textScale));
     ctx.font = `${fontSize}px sans-serif`;
     ctx.fillStyle = '#111';
     const chars = Array.from(text);
@@ -1193,7 +1203,7 @@ async function createPagesForPdf(pdf, options, limit = Infinity, preserveCanvase
     let canvases = [];
 
     if (options.mode === 'reflow') {
-      canvases = await renderReflowPages(pdf, n, options.scale);
+      canvases = await renderReflowPages(pdf, n, options.scale, options.textScale);
 
       // 扫描页、复杂图文页无法安全提取重排时，退回原样。
       if (!canvases) {
@@ -1258,6 +1268,7 @@ function getOptions() {
       Number($('trimDistance')?.value || 0)
     ),
     scale: Number($('scale').value),
+    textScale: Number($('textScale')?.value || 1),
     algo: $('dither').value,
     contrast: $('contrast').value,
     brightness: Number($('brightness').value)
@@ -1386,7 +1397,7 @@ async function runConversion() {
           let canvases = [];
 
           if (options.mode === 'reflow') {
-            canvases = await renderReflowPages(pdf, n, options.scale);
+            canvases = await renderReflowPages(pdf, n, options.scale, options.textScale);
 
             if (!canvases) {
               canvases = await renderOriginalPage(

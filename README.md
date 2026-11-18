@@ -147,3 +147,10 @@ This project is released under the MIT License.
 - [Xteink](https://xteink.com/) — X3 e-reader platform.
 
 Thanks to the developers and contributors of the open-source projects that make this tool possible.
+
+
+### 本次重排调整
+
+- 重排正文支持中文、英文和日文文字提取；不会再把普通路径字形当作图片块。
+- 表格图片识别采用更严格的重复列对齐与数值行条件，减少正文误判。
+- 新增重排文字大小 80%–130% 设置；只作用于重排文字，不改变公式、表格及插图图片块的尺寸。
