@@ -888,7 +888,7 @@ async function makeOutputPage(c, depth, algo, contrast, brightness) {
     : packXTG(processed, w, h);
 }
 
-async function createPagesForPdf(pdf, options, limit = Infinity) {
+async function createPagesForPdf(pdf, options, limit = Infinity, keepCanvases = false) {
   const output = [];
   const pageTotal = pdf.numPages;
 
@@ -936,8 +936,11 @@ async function createPagesForPdf(pdf, options, limit = Infinity) {
         canvas: c
       });
 
-      c.width = 1;
-      c.height = 1;
+      // 预览需要在生成 PNG 前保留画布；正式转换仍立即释放，控制内存。
+      if (!keepCanvases) {
+        c.width = 1;
+        c.height = 1;
+      }
     }
 
     canvases.length = 0;
@@ -979,7 +982,7 @@ async function previewFirst() {
     const options = getOptions();
     pdf = await openPdf(chosen[0]);
 
-    const pages = await createPagesForPdf(pdf, options, 10);
+    const pages = await createPagesForPdf(pdf, options, 10, true);
 
     for (let i = 0; i < pages.length; i++) {
       const c = pages[i].canvas;
